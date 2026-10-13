@@ -1,6 +1,6 @@
 # Global Gait dashboard
 
-A worldwide study of pedestrian gait speed, run by TU Delft, Colorado School of Mines and the BODIES lab.
+A worldwide study of pedestrian gait speed by the biomechanics community.
 
 This repository holds the website version of the Global Gait dashboard. It is a static page: there is no server and no database.
 
