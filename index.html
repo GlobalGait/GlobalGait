@@ -150,6 +150,7 @@ select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border
 .country.has{fill:var(--land-data);cursor:pointer}
 .country.sel{fill:var(--land-sel)}
 .sitedot{fill:var(--dot);fill-opacity:.85;stroke:var(--dot-ring);stroke-width:1.5;cursor:pointer}
+.sitedot.dim{fill-opacity:.18;stroke-opacity:.35}
 .isoline{stroke:var(--muted);stroke-width:1;stroke-dasharray:1.5 3;fill:none;opacity:.85}
 .isolabel{fill:var(--muted);font:11px var(--font-num);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round;pointer-events:none}
 .fitline{stroke:var(--ink-2);stroke-width:1.5;stroke-dasharray:5 4;fill:none}
@@ -238,6 +239,9 @@ tr.selrow td{background:var(--accent-soft)}
   <section class="toolbar"  <section class="toolbar" aria-label="Filters">
     <label for="countrySel">Country
       <select id="countrySel"><option value="">All countries</option></select>
+    </label>
+    <label for="envSel">Environment
+      <select id="envSel"><option value="">All environments</option></select>
     </label>
     <label for="incErr"><input type="checkbox" id="incErr"> Include trials marked as error or out of range</label>
     <label for="incBack"><input type="checkbox" id="incBack"> Include walking backwards</label>
@@ -461,7 +465,7 @@ function countryAt(lat, lon){
 }
 
 /* ---------- state ---------- */
-const S = { sessions:new Map(), trials:new Map(), country:'', incErr:false, incBack:false, sexMode:'pct', canEdit:false, db:null };
+const S = { sessions:new Map(), trials:new Map(), country:'', env:'', incErr:false, incBack:false, sexMode:'pct', canEdit:false, db:null };
 
 /* ---------- data file ---------- */
 const DATA_URL = 'data/globalgait-data.json';
@@ -632,7 +636,7 @@ function allRows(){
   return rows;
 }
 function filtered(){
-  return allRows().filter(r => (!S.country || r.meta.country===S.country)
+  return allRows().filter(r => inScope(r.meta)
     && (S.incErr || !excluded(r)) && (S.incBack || !r.tags.includes('walking backwards')));
 }
 // Same plausible ranges as the Global Gait tool (from v1.1.0). Older files are filtered here too.
@@ -655,7 +659,7 @@ function hideTip(){ tip.style.opacity=0; }
 
 /* ---------- render ---------- */
 function render(){
-  renderCountryOptions();
+  renderCountryOptions(); renderEnvOptions();
   const rows = filtered();
   renderKpis(rows); renderMap(); renderCompare(); renderDiffs(rows); renderNorm(rows); renderBySex(rows, SPEED, '#sexChart', '#sexLegend'); renderBySex(rows, CAD, '#cadSexChart', '#cadSexLegend'); renderByAge(rows, SPEED, '#ageChart', '#ageLegend', '#ageNote'); renderByAge(rows, CAD, '#cadAgeChart', '#cadAgeLegend', '#cadAgeNote'); renderTags(rows); renderCadence(rows); renderAsym(rows); renderStepLength(rows); renderStepCad(rows); renderSessions();
 }
@@ -668,7 +672,7 @@ function renderCountryOptions(){
   sel.value=S.country;
 }
 function renderKpis(rows){
-  const sessions=[...S.sessions.values()].filter(m=>!S.country || m.country===S.country);
+  const sessions=[...S.sessions.values()].filter(inScope);
   const sites=new Set(sessions.map(m=>`${m.site.siteName}|${m.lat}|${m.lon}`));
   const countries=new Set(sessions.map(m=>m.country));
   const researchers=new Set(sessions.map(m=>(m.site.researcher||'').trim()).filter(Boolean));
@@ -676,7 +680,7 @@ function renderKpis(rows){
   const speeds=rows.map(r=>r.speedMps).filter(isFinite);
   const tot=Math.max(1,rows.length);
   $('#kpis').innerHTML=`
-    <div class="kpi"><span class="label">Trials</span><span class="value">${rows.length}</span><span class="sub">${S.country?esc(S.country):'all countries'}</span></div>
+    <div class="kpi"><span class="label">Trials</span><span class="value">${rows.length}</span><span class="sub">${scopeText()?esc(scopeText()):'all countries and environments'}</span></div>
     <div class="kpi"><span class="label">Sites</span><span class="value">${sites.size}</span><span class="sub">${sessions.length} session${sessions.length===1?'':'s'}</span></div>
     <div class="kpi"><span class="label">Countries</span><span class="value">${countries.size}</span><span class="sub">${researchers.size} researcher${researchers.size===1?'':'s'}</span></div>
     <div class="kpi"><span class="label">Male · Female</span><span class="value">${male} · ${female}</span>
@@ -711,19 +715,32 @@ function renderMap(){
   // one dot per site
   const bySite=new Map();
   for(const m of sessions){ if(m.lat==null||m.lon==null) continue; const k=`${m.site.siteName}|${m.lat.toFixed(4)}|${m.lon.toFixed(4)}`;
-    const o=bySite.get(k)||{name:m.site.siteName, city:m.site.city, country:m.country, lat:m.lat, lon:m.lon, n:0, sessions:0}; o.n+=m.nValid||0; o.sessions++; bySite.set(k,o); }
+    const o=bySite.get(k)||{name:m.site.siteName, city:m.site.city, country:m.country, lat:m.lat, lon:m.lon, env:envOf(m), n:0, sessions:0}; o.n+=m.nValid||0; o.sessions++; bySite.set(k,o); }
   const sites=[...bySite.values()];
   const r=d3.scaleSqrt().domain([0, d3.max(sites,s=>s.n)||1]).range([4, selFeat?18:12]);
   svg.append('g').selectAll('circle').data(sites.sort((a,b)=>b.n-a.n)).join('circle')
-    .attr('class','sitedot').attr('cx',s=>proj([s.lon,s.lat])[0]).attr('cy',s=>proj([s.lon,s.lat])[1]).attr('r',s=>r(s.n))
-    .on('mousemove',(e,s)=>showTip(e,`<b>${esc(s.name||'Unnamed site')}</b><br>${esc([s.city,s.country].filter(Boolean).join(', '))}<br>${s.n} valid trials · ${s.sessions} session${s.sessions===1?'':'s'}`))
+    .attr('class',s=>'sitedot'+(((!S.country||s.country===S.country)&&(!S.env||s.env===S.env))?'':' dim')).attr('cx',s=>proj([s.lon,s.lat])[0]).attr('cy',s=>proj([s.lon,s.lat])[1]).attr('r',s=>r(s.n))
+    .on('mousemove',(e,s)=>showTip(e,`<b>${esc(s.name||'Unnamed site')}</b><br>${esc([s.city,s.country].filter(Boolean).join(', '))}<br>${esc(s.env)}<br>${s.n} valid trials · ${s.sessions} session${s.sessions===1?'':'s'}`))
     .on('mouseleave',hideTip)
     .on('click',(e,s)=>setCountry(s.country));
   const noCoord=sessions.filter(m=>m.lat==null||m.lon==null).length;
-  const shown=sites.filter(s=>!S.country || s.country===S.country).length;
-  $('#mapNote').textContent = sites.length ? `${shown} site${shown===1?'':'s'}${S.country?' in '+S.country:''}, dot size = valid trials${noCoord?` · ${noCoord} session${noCoord===1?'':'s'} without coordinates`:''}` : 'No sites yet';
+  const shown=sites.filter(s=>(!S.country || s.country===S.country) && (!S.env || s.env===S.env)).length;
+  $('#mapNote').textContent = sites.length ? `${shown} site${shown===1?'':'s'}${scopeText()?' in '+scopeText():''}, dot size = valid trials${noCoord?` · ${noCoord} session${noCoord===1?'':'s'} without coordinates`:''}` : 'No sites yet';
 }
 function setCountry(c){ S.country=c; render(); }
+// Environment filter (works together with the country filter)
+const envOf = m => (m && m.site && String(m.site.environmentType||'').trim()) || 'Not recorded';
+const inScope = m => (!S.country || m.country===S.country) && (!S.env || envOf(m)===S.env);
+const scopeText = () => [S.country, S.env].filter(Boolean).join(' · ');
+function setEnv(v){ S.env=v; render(); }
+function renderEnvOptions(){
+  const sel=$('#envSel'); const counts=new Map();
+  for(const m of S.sessions.values()) if(!S.country || m.country===S.country) counts.set(envOf(m), (counts.get(envOf(m))||0) + (m.nValid||0));
+  const names=[...counts.keys()].sort();
+  if(S.env && !counts.has(S.env)) S.env='';
+  sel.innerHTML='<option value="">All environments</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)} (${counts.get(n)})</option>`).join('');
+  sel.value=S.env;
+}
 
 /* histogram helpers */
 // bins of width bw starting at a multiple of bw
@@ -859,7 +876,7 @@ function diffCell(a,b,dp,unit,conf=0.95){
 const mlabel=m=>`${m.label}${m.unit?` (${m.unit})`:''}${m.est?' <span class="muted">(est. height)</span>':''}`;
 function renderDiffs(rows){
   const male=rows.filter(r=>r.sex==='male'), female=rows.filter(r=>r.sex==='female');
-  $('#diffNote').textContent=`${rows.length} valid trials${S.country?' in '+S.country:''}`;
+  $('#diffNote').textContent=`${rows.length} valid trials${scopeText()?' in '+scopeText():''}`;
   $('#diffSex').innerHTML=`<table class="difftable"><thead><tr><th>Measure</th><th>Men</th><th>Women</th><th>Difference women − men</th></tr></thead><tbody>
     <tr><td>Trials</td><td class="num">${male.length}</td><td class="num">${female.length}</td><td></td></tr>
     ${DIFF_MEASURES.map(m=>{ const a=valsOf(male,m.key), b=valsOf(female,m.key);
@@ -1117,10 +1134,10 @@ function renderAsym(rows){
 }
 
 function renderSessions(){
-  const list=[...S.sessions.entries()].filter(([,m])=>!S.country || m.country===S.country)
+  const list=[...S.sessions.entries()].filter(([,m])=>inScope(m))
     .sort((a,b)=>String(b[1].site.dateTime||'').localeCompare(String(a[1].site.dateTime||'')));
   $('#sessEmpty').hidden = list.length>0;
-  $('#sessNote').textContent = list.length ? `${list.length} session${list.length===1?'':'s'}${S.country?' in '+S.country:''}` : '';
+  $('#sessNote').textContent = list.length ? `${list.length} session${list.length===1?'':'s'}${scopeText()?' in '+scopeText():''}` : '';
   const tb=$('#sessRows'); tb.innerHTML='';
   for(const [id,m] of list){
     const tr=document.createElement('tr');
@@ -1154,6 +1171,7 @@ $('#csvBtn').addEventListener('click', async ()=>{
 
 /* ---------- controls ---------- */
 $('#countrySel').addEventListener('change',e=>setCountry(e.target.value));
+$('#envSel').addEventListener('change',e=>setEnv(e.target.value));
 $('#incErr').addEventListener('change',e=>{ S.incErr=e.target.checked; render(); });
 $('#incBack').addEventListener('change',e=>{ S.incBack=e.target.checked; render(); });
 document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{
