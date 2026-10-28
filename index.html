@@ -115,7 +115,8 @@ select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border
 .cmpsel{display:flex;flex-wrap:wrap;gap:10px 24px}
 .cmpsel label{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--ink-2)}
 .cmpsel .sw{display:inline-block;width:12px;height:12px;border-radius:3px}
-.cmpsel select{max-width:280px}
+.cmpsel select{max-width:min(280px,100%);min-width:0}
+.cmpsel label{flex-wrap:wrap;max-width:100%}
 .cmptable td.diff{font-weight:600}
 .cmptable td.diff .muted{font-weight:400}
 .cmpcharts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
@@ -278,7 +279,7 @@ tr.selrow td{background:var(--accent-soft)}
   <section class="card cmpcard" aria-label="Compare two locations">
     <div class="cardhead">
       <h2>Compare two locations</h2>
-      <span class="note">uses the error and walking-backwards settings above, not the country filter</span>
+      <span class="note">sites, countries or environments · uses the error and walking-backwards settings above, not the filters</span>
       <span class="right"><span class="seg" role="group" aria-label="Show as"><button type="button" data-mode="pct" aria-pressed="true">% of group</button><button type="button" data-mode="count" aria-pressed="false">Count</button></span></span>
     </div>
     <div class="cmpsel">
@@ -824,16 +825,24 @@ function renderGrouped(groups, M, chartSel, legendSel, extra, pct, emptyText, he
 const siteKey=m=>`site:${m.site.siteName||''}|${m.lat==null?'':m.lat.toFixed(4)}|${m.lon==null?'':m.lon.toFixed(4)}`;
 const CMP={a:'', b:''};
 function locations(){
-  const sites=new Map(), countries=new Map();
+  const sites=new Map(), countries=new Map(), envs=new Map(), combos=new Map();
   for(const m of S.sessions.values()){
+    const ek='env:'+envOf(m); const e=envs.get(ek)||{key:ek, label:envOf(m), n:0}; e.n+=m.nValid||0; envs.set(ek,e);
+    const xk='ce:'+m.country+'|'+envOf(m); const x=combos.get(xk)||{key:xk, label:`${m.country} · ${envOf(m)}`, n:0}; x.n+=m.nValid||0; combos.set(xk,x);
     const k=siteKey(m); const s=sites.get(k)||{key:k, label:`${m.site.siteName||'Unnamed site'}${m.site.city?' — '+m.site.city:''}`, n:0}; s.n+=m.nValid||0; sites.set(k,s);
     const ck='country:'+m.country; const c=countries.get(ck)||{key:ck, label:m.country, n:0}; c.n+=m.nValid||0; countries.set(ck,c);
   }
-  return {sites:[...sites.values()].sort((a,b)=>a.label.localeCompare(b.label)), countries:[...countries.values()].sort((a,b)=>a.label.localeCompare(b.label))};
+  const srt=m=>[...m.values()].sort((a,b)=>a.label.localeCompare(b.label));
+  const L={sites:srt(sites), countries:srt(countries), envs:srt(envs), combos:srt(combos)};
+  L.all=[...L.sites,...L.countries,...L.envs,...L.combos];
+  return L;
 }
 function locRows(key){
   return allRows().filter(r => (S.incErr || !excluded(r)) && (S.incBack || !r.tags.includes('walking backwards'))
-    && (key.startsWith('country:') ? r.meta.country===key.slice(8) : siteKey(r.meta)===key));
+    && (key.startsWith('country:') ? r.meta.country===key.slice(8)
+      : key.startsWith('env:') ? envOf(r.meta)===key.slice(4)
+      : key.startsWith('ce:') ? (r.meta.country+'|'+envOf(r.meta))===key.slice(3)
+      : siteKey(r.meta)===key));
 }
 // Normal quantile (Acklam's rational approximation, |error| < 1.2e-9)
 function zInv(p){
@@ -903,15 +912,15 @@ function renderDiffs(rows){
 $('#diffMeasure').addEventListener('change',e=>{ diffMeasure=e.target.value; renderDiffs(filtered()); });
 
 function renderCompare(){
-  const L=locations(), opts=sel=>`<option value="">Choose a location</option><optgroup label="Sites">${L.sites.map(s=>`<option value="${esc(s.key)}">${esc(s.label)} (${s.n})</option>`).join('')}</optgroup><optgroup label="Countries">${L.countries.map(c=>`<option value="${esc(c.key)}">${esc(c.label)} (${c.n})</option>`).join('')}</optgroup>`;
-  const all=[...L.sites,...L.countries].map(x=>x.key);
+  const L=locations(), opts=sel=>`<option value="">Choose a location</option><optgroup label="Sites">${L.sites.map(s=>`<option value="${esc(s.key)}">${esc(s.label)} (${s.n})</option>`).join('')}</optgroup><optgroup label="Countries">${L.countries.map(c=>`<option value="${esc(c.key)}">${esc(c.label)} (${c.n})</option>`).join('')}</optgroup><optgroup label="Environments (all countries)">${L.envs.map(c=>`<option value="${esc(c.key)}">${esc(c.label)} (${c.n})</option>`).join('')}</optgroup><optgroup label="Country and environment">${L.combos.map(c=>`<option value="${esc(c.key)}">${esc(c.label)} (${c.n})</option>`).join('')}</optgroup>`;
+  const all=L.all.map(x=>x.key);
   if(!all.includes(CMP.a)) CMP.a = L.sites[0]?.key || '';
   if(!all.includes(CMP.b)) CMP.b = L.sites.find(s=>s.key!==CMP.a)?.key || '';
   $('#cmpA').innerHTML=opts(); $('#cmpA').value=CMP.a; $('#cmpB').innerHTML=opts(); $('#cmpB').value=CMP.b;
   const body=$('#cmpBody');
   if(!CMP.a || !CMP.b){ body.innerHTML=`<div class="empty">${L.sites.length<2?'Comparing needs data from at least two sites.':'Choose two locations to compare.'}</div>`; return; }
   const A=locRows(CMP.a), B=locRows(CMP.b);
-  const name=k=>{ const x=[...L.sites,...L.countries].find(y=>y.key===k); return x?x.label:k; };
+  const name=k=>{ const x=L.all.find(y=>y.key===k); return x?x.label:k; };
   const v=(rows,k)=>rows.map(r=>r[k]).filter(x=>x!=null && isFinite(x) && x>0);
   const pc=(rows,f)=>rows.length? (rows.filter(f).length/rows.length*100).toFixed(0)+'%' : '–';
   const msd=(a,dp)=>a.length?`${fmt(mean(a),dp)} ± ${fmt(sd(a),dp)}`:'–';
