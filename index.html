@@ -639,6 +639,7 @@ function normaliseTrial(t, fileVersion){
     speedMps:num(t.speedMps), cadenceSpm:num(t.cadenceSpm), stepLengthM:num(t.stepLengthM),
     stepTimesMs:Array.isArray(t.stepTimesMs)?t.stepTimesMs.map(Number).filter(isFinite):[],
     sex:t.sex||'', ageGroups:Array.isArray(t.ageGroups)?t.ageGroups:[], footwear:footwear||'', tags,
+    company:t.company||['solo','duo','group'].find(c=>tags.includes(c))||'', companySex:t.companySex||'',
     error:!!t.error, errorReason:t.errorReason||'', toolVersion:t.appVersion || (fileVersion && !fileVersion.startsWith('0.') ? fileVersion : 'before 1.0.0') };
 }
 async function handleFiles(files){
@@ -1226,7 +1227,7 @@ function renderByAge(rows, M, chartSel, legendSel, noteSel){
 function barRows(items, kind){
   const max=Math.max(1, ...items.map(i=>i[1]));
   return items.map(([name,n])=>{ const on=S.hl && S.hl.kind===kind && S.hl.name===name;
-    return `<button type="button" class="barrow" data-kind="${kind}" data-name="${esc(name)}" aria-pressed="${on}" ${n?'':'disabled'} title="${n?'Highlight these trials in the dot charts':'No trials with this tag'}"><span class="name">${esc(name)}</span><span class="track"><span class="fill" style="width:${n/max*100}%${n?'':';display:none'}"></span></span><span class="count">${n}</span></button>`; }).join('');
+    return `<button type="button" class="barrow" data-kind="${kind}" data-name="${esc(name)}" aria-pressed="${on}" ${n?'':'disabled'} title="${n?'Highlight these trials in the dot charts and fit the lines on them only':'No trials with this tag'}"><span class="name">${esc(name)}</span><span class="track"><span class="fill" style="width:${n/max*100}%${n?'':';display:none'}"></span></span><span class="count">${n}</span></button>`; }).join('');
 }
 function renderTags(rows){
   const tc=new Map(TAG_ORDER.map(t=>[t,0])); rows.forEach(r=>r.tags.forEach(t=>tc.set(t,(tc.get(t)||0)+1)));
@@ -1306,8 +1307,10 @@ function scatter(sel, rows, o){
   }
   // least-squares fit over all points: linear or quadratic (S.fitMode 'auto' uses the plot's own order)
   const order=S.fitMode==='lin'?1:S.fitMode==='quad'?2:(o.order||1);
-  const fitAll=o.noFit ? null : polyFit(pts.map(p=>p[xKey]), pts.map(p=>p[yKey]), order);
-  const fitLin=order>1 ? polyFit(pts.map(p=>p[xKey]), pts.map(p=>p[yKey]), 1) : fitAll;
+  // when a tag or footwear is selected, the fit lines and statistics use only those trials
+  const fp=S.hl ? pts.filter(hlMatch) : pts;
+  const fitAll=o.noFit ? null : polyFit(fp.map(p=>p[xKey]), fp.map(p=>p[yKey]), order);
+  const fitLin=order>1 ? polyFit(fp.map(p=>p[xKey]), fp.map(p=>p[yKey]), 1) : fitAll;
   const col=s=>s==='male'?'var(--male)':s==='female'?'var(--female)':'var(--unknown)';
   const sexOrder={unknown:0,'':0,male:1,female:2};
   const hl=!!S.hl, isHl=p=>hl && hlMatch(p);
@@ -1320,21 +1323,21 @@ function scatter(sel, rows, o){
     .on('mouseleave',hideTip);
   if(hl){ const sel=pts.filter(isHl), rest=pts.filter(p=>!isHl(p));
     hb.hidden=false;
-    hb.innerHTML=`<span>Highlighted: <b>${esc(S.hl.name)}</b> · ${sel.length} of ${pts.length} trials${sel.length?` · mean ${o.yName} ${fmt(mean(sel.map(p=>p[yKey])),o.yDp)} ${o.yUnit} vs ${fmt(mean(rest.map(p=>p[yKey])),o.yDp)} ${o.yUnit} for the others`:''}</span><button type="button" class="btn" data-clearhl>Clear</button>`;
+    hb.innerHTML=`<span>Selected: <b>${esc(S.hl.name)}</b> · fit lines use only these ${sel.length} of ${pts.length} trials${sel.length?` · mean ${o.yName} ${fmt(mean(sel.map(p=>p[yKey])),o.yDp)} ${o.yUnit} vs ${fmt(mean(rest.map(p=>p[yKey])),o.yDp)} ${o.yUnit} for the others`:''}</span><button type="button" class="btn" data-clearhl>Clear</button>`;
   } else { hb.hidden=true; hb.innerHTML=''; }
   const [x0,x1]=x.domain();
   svg.append('defs').append('clipPath').attr('id','sfclip'+sel.replace(/\W/g,'')).append('rect').attr('x',m.l).attr('y',m.t).attr('width',w-m.l-m.r).attr('height',h-m.t-m.b);
   const cf=v=>Math.abs(v)>=10? v.toFixed(1) : String(+v.toPrecision(3));
   const eq=f=>polyEq(f, o.xName, cf);
   const fitPath=(f,lo,hi)=>d3.line()(d3.range(61).map(i=>{ const v=lo+(hi-lo)*i/60; return [x(v), y(f.at(v))]; }));
-  const xr=d3.extent(pts, p=>p[xKey]);
+  const xr=d3.extent(fp.length?fp:pts, p=>p[xKey]);
   // a quadratic is only drawn over the observed range, so it does not bend away outside the data
   const [fa,fb]=order>1 ? [Math.max(xr[0],x0), Math.min(xr[1],x1)] : [x0,x1];
   if(fitAll) svg.append('path').attr('class','fitline').attr('clip-path',`url(#sfclip${sel.replace(/\W/g,'')})`).attr('d',fitPath(fitAll,fa,fb));
   // separate least-squares lines for women and men, over each group's own range
   const sexFits=[];
   ['female','male'].forEach(sx=>{
-    const q=pts.filter(p=>p.sex===sx); if(o.noFit || q.length<10) return;
+    const q=fp.filter(p=>p.sex===sx); if(o.noFit || q.length<10) return;
     const qx=q.map(p=>p[xKey]), qy=q.map(p=>p[yKey]);
     const f=polyFit(qx, qy, order); if(!f) return;
     const lo=Math.max(d3.min(qx),x0), hi=Math.min(d3.max(qx),x1);
@@ -1346,14 +1349,15 @@ function scatter(sel, rows, o){
   // drop labels that would overlap a neighbour
   const kept=[]; isoLabels.sort((a,b)=>a.x-b.x).forEach(l=>{ const w0=l.t.length*6.6+4; if(!kept.some(k=>Math.abs(k.y-l.y)<12 && Math.abs(k.x-l.x)<w0)) kept.push(l); });
   svg.append('g').selectAll('text').data(kept).join('text').attr('class','isolabel').attr('x',d=>d.x).attr('y',d=>d.y).attr('text-anchor','end').text(d=>d.t);
-  $(o.note).textContent=!fitAll?`${pts.length} trials`:`${pts.length} trials · ${order>1?'quadratic':'linear'} fit: ${o.yName} = ${eq(fitAll)}, R² = ${fitAll.r2.toFixed(2)}${order>1&&fitLin?` (linear R² = ${fitLin.r2.toFixed(2)})`:''}`
+  const nTxt=S.hl?`${fp.length} of ${pts.length} trials (fits on “${S.hl.name}” only)`:`${pts.length} trials`;
+  $(o.note).textContent=!fitAll?nTxt:`${nTxt} · ${order>1?'quadratic':'linear'} fit: ${o.yName} = ${eq(fitAll)}, R² = ${fitAll.r2.toFixed(2)}${order>1&&fitLin?` (linear R² = ${fitLin.r2.toFixed(2)})`:''}`
     +(sexFits.length?' · R² '+sexFits.map(f=>`${f.sx==='female'?'women':'men'} ${f.f.r2.toFixed(2)}`).join(', '):'');
   $(o.note).dataset.order=order;
   return pts;
 }
 function scatterLegend(legSel, pts, isoText, noFit){
   const n=s=>pts.filter(p=>p.sex===s).length;
-  $(legSel).innerHTML=`<span><span class="sw" style="background:var(--male)"></span>Male (${n('male')})</span><span><span class="sw" style="background:var(--female)"></span>Female (${n('female')})</span><span><span class="sw" style="background:var(--unknown)"></span>Unknown (${pts.length-n('male')-n('female')})</span>${noFit?'':`<span><span class="sw" style="background:transparent;border-top:2px dashed var(--ink-2);height:0;border-radius:0;vertical-align:3px"></span>Fit, all trials</span><span><span class="sw" style="background:transparent;border-top:2.5px solid var(--female);height:0;border-radius:0;vertical-align:3px"></span>Fit, women</span><span><span class="sw" style="background:transparent;border-top:2.5px solid var(--male);height:0;border-radius:0;vertical-align:3px"></span>Fit, men</span>`}<span><span class="sw" style="background:transparent;border-top:1.5px dotted var(--muted);height:0;border-radius:0;vertical-align:3px"></span>${isoText}</span>`;
+  $(legSel).innerHTML=`<span><span class="sw" style="background:var(--male)"></span>Male (${n('male')})</span><span><span class="sw" style="background:var(--female)"></span>Female (${n('female')})</span><span><span class="sw" style="background:var(--unknown)"></span>Unknown (${pts.length-n('male')-n('female')})</span>${noFit?'':`<span><span class="sw" style="background:transparent;border-top:2px dashed var(--ink-2);height:0;border-radius:0;vertical-align:3px"></span>${S.hl?'Fit, selected trials':'Fit, all trials'}</span><span><span class="sw" style="background:transparent;border-top:2.5px solid var(--female);height:0;border-radius:0;vertical-align:3px"></span>Fit, women</span><span><span class="sw" style="background:transparent;border-top:2.5px solid var(--male);height:0;border-radius:0;vertical-align:3px"></span>Fit, men</span>`}<span><span class="sw" style="background:transparent;border-top:1.5px dotted var(--muted);height:0;border-radius:0;vertical-align:3px"></span>${isoText}</span>`;
 }
 const F0=d=>d3.format('.0f')(d), F2=d=>d3.format('.2f')(d), F1=d=>d3.format('.1f')(d);
 function renderCadence(rows){
@@ -1371,7 +1375,7 @@ function renderStepLength(rows){
     iso:{third:(v,L)=>60*v/L, curve:(c,v)=>60*v/c, fmt:c=>d3.format('.0f')(c)+'/min'}});
   if(!pts){ $('#slLegend').innerHTML=''; renderSlExplain(null); return; }
   scatterLegend('#slLegend', pts, 'Equal cadence');
-  renderSlExplain(pts);
+  renderSlExplain(S.hl ? pts.filter(hlMatch) : pts);
 }
 // least squares by Gram–Schmidt: R² and residual SD for a design matrix; collinear columns are dropped
 function olsR2(cols, y){
@@ -1386,7 +1390,7 @@ function olsR2(cols, y){
 function renderSlExplain(pts){
   const el=$('#slExplain'); if(!el) return;
   const d=(pts||[]).filter(p=>(p.sex==='male'||p.sex==='female') && isFinite(p.stepLengthM) && isFinite(p.speedMps));
-  if(d.length<30){ el.innerHTML=`<h3>What explains step length?</h3><p>Needs at least 30 trials with sex recorded (${d.length} in this selection).</p>`; return; }
+  if(d.length<30){ el.innerHTML=`<h3>What explains step length?${S.hl?` (only “${esc(S.hl.name)}”)`:''}</h3><p>Needs at least 30 trials with sex recorded (${d.length} in this selection).</p>`; return; }
   const order=S.fitMode==='lin'?1:2;
   const y=d.map(p=>p.stepLengthM), one=d.map(()=>1);
   // every other tag seen at least 5 times in this selection (and not on everyone)
@@ -1404,7 +1408,7 @@ function renderSlExplain(pts){
   let cols=[], prev=0; const out=[];
   for(const st of steps){ cols=cols.concat(st.cols); const f=olsR2(cols,y); out.push({...st, ...f, gain:f.r2-prev}); prev=f.r2; }
   const sessions=new Set(d.map(p=>p.sid)).size;
-  el.innerHTML=`<h3>What explains step length?</h3>
+  el.innerHTML=`<h3>What explains step length?${S.hl?` (only “${esc(S.hl.name)}”)`:''}</h3>
   <p>Each row adds a factor to the one above (least squares, ${d.length} trials with sex recorded${sessions<2?'; one session, so the session row adds nothing':''}). Body height is not measured, so the tags “tall” and “short” are the only rough proxy. “Other tags” are all remaining tags seen at least 5 times (company, bags, phone, high BMI and so on).</p>
   <div class="tablewrap"><table><thead><tr><th>Model</th><th>R²</th><th class="n">Added</th><th class="n">Residual SD</th></tr></thead><tbody>${
     out.map((o,i)=>`<tr><td>${o.name}</td><td><span class="r2bar"><span style="width:${(Math.max(0,o.r2-o.gain)*100).toFixed(1)}%"></span><span class="add" style="left:${(Math.max(0,o.r2-o.gain)*100).toFixed(1)}%;width:${(Math.max(0,o.gain)*100).toFixed(1)}%"></span></span><span class="num">${o.r2.toFixed(2)}</span></td><td class="n">${i?'+'+(o.gain*100).toFixed(1)+' pp':''}</td><td class="n">${isFinite(o.sd)?(o.sd*100).toFixed(1)+' cm':'–'}</td></tr>`).join('')
